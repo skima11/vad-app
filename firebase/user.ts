@@ -9,19 +9,9 @@ import {
   Timestamp,
   runTransaction,
 } from "firebase/firestore";
-import { auth, db, storage } from "./firebaseConfig";
+import { auth, db } from "./firebaseConfig";
 import { UserProfile, MiningData, ReferralData } from "./types";
 import { arrayUnion } from "firebase/firestore";
-
-/**
- * NOTE: mining state is stored under users/{uid}.mining
- * mining: {
- *   miningActive: boolean,
- *   lastStart: Timestamp | null,
- *   lastClaim: Timestamp | null,
- *   balance: number
- * }
- */
 
 // Generate random referral code
 export const generateReferralCode = (uid: string) =>
@@ -34,7 +24,6 @@ export async function createUserInFirestore(referredBy: string | null = null) {
   if (!auth.currentUser) return;
 
   const uid = auth.currentUser.uid;
-
   const userRef = doc(db, "users", uid);
 
   const profile: UserProfile = {
@@ -61,6 +50,20 @@ export async function createUserInFirestore(referredBy: string | null = null) {
     profile,
     mining,
     referrals,
+
+    // ✅ BOOST INIT
+    boost: {
+      usedToday: 0,
+      lastReset: serverTimestamp(),
+      balance: 0,
+    },
+
+    // ✅ DAILY CLAIM INIT (for later)
+    dailyClaim: {
+      lastClaim: null,
+      streak: 0,
+      totalEarned: 0,
+    },
   });
 }
 
@@ -78,7 +81,6 @@ export async function getUserData(uid: string) {
 export async function startMining(uid: string) {
   const userRef = doc(db, "users", uid);
 
-  // Always set a fresh lastStart when user presses Start
   await updateDoc(userRef, {
     "mining.miningActive": true,
     "mining.lastStart": serverTimestamp(),
@@ -91,29 +93,17 @@ export async function startMining(uid: string) {
 export async function stopMining(uid: string) {
   const userRef = doc(db, "users", uid);
 
-  // Stop mining flag only. We do not claim automatically.
   await updateDoc(userRef, {
     "mining.miningActive": false,
   });
 }
 
 // ------------------------------
-// CLAIM REWARDS
+// CLAIM MINING REWARDS
 // ------------------------------
-/**
- * Claim logic:
- * - If lastStart missing → nothing to claim (return 0)
- * - elapsedSeconds = now - lastStart
- * - cappedSeconds = min(elapsedSeconds, 86400) // cap at 24 hours
- * - reward = (cappedSeconds / 86400) * 4.8
- * - credit reward to mining.balance, set lastClaim, clear lastStart, set miningActive false
- *
- * Returns reward amount (number)
- */
 export async function claimMiningReward(uid: string) {
   const userRef = doc(db, "users", uid);
 
-  // Use transaction for safety (race-conditions)
   const reward = await runTransaction(db, async (tx) => {
     const snap = await tx.get(userRef);
     if (!snap.exists()) return 0;
@@ -127,16 +117,14 @@ export async function claimMiningReward(uid: string) {
     const elapsedMs = now.toMillis() - mining.lastStart.toMillis();
     const elapsedSeconds = Math.max(0, Math.floor(elapsedMs / 1000));
 
-    const MAX_SECONDS = 24 * 3600; // 86400
+    const MAX_SECONDS = 24 * 3600;
     const capped = Math.min(elapsedSeconds, MAX_SECONDS);
 
-    const DAILY_MAX = 4.8; // max per 24h
+    const DAILY_MAX = 4.8;
     const rewardAmount = (capped / MAX_SECONDS) * DAILY_MAX;
 
-    // If reward is extremely tiny (floating edge), normalize to two decimals (optional)
     const normalizedReward = Number(rewardAmount);
 
-    // Update doc: increment balance, set lastClaim timestamp, clear lastStart, miningActive false
     tx.update(userRef, {
       "mining.balance": increment(normalizedReward),
       "mining.lastClaim": serverTimestamp(),
@@ -154,18 +142,153 @@ export async function claimMiningReward(uid: string) {
 // REGISTER REFERRAL
 // ------------------------------
 export async function registerReferral(referrerCode: string, newUserUid: string) {
-  // Find user who owns this referral code
   const allUsersSnap = await getDoc(doc(db, "referrals", referrerCode));
-
-  // If no referral document found → skip
   if (!allUsersSnap.exists()) return;
 
   const referrerUid = allUsersSnap.data().uid;
-
   const referrerRef = doc(db, "users", referrerUid);
 
   await updateDoc(referrerRef, {
     "referrals.totalReferred": increment(1),
     "referrals.referredUsers": arrayUnion([newUserUid]),
   });
+}
+
+// ------------------------------
+// BOOST REWARD (WATCH ADS)
+// ------------------------------
+export async function claimBoostReward(uid: string) {
+  const userRef = doc(db, "users", uid);
+
+  const reward = await runTransaction(db, async (tx) => {
+    const snap = await tx.get(userRef);
+    if (!snap.exists()) return 0;
+
+    const data = snap.data();
+
+    const boost = data.boost ?? {
+      usedToday: 0,
+      lastReset: null,
+      balance: 0,
+    };
+
+    const now = Timestamp.now();
+    const lastReset = boost.lastReset?.toMillis() ?? 0;
+    const diff = now.toMillis() - lastReset;
+
+    let resetApplied = false;
+
+    // ✅ Auto reset every 24h (persisted)
+    if (!boost.lastReset || diff >= 24 * 3600 * 1000) {
+      boost.usedToday = 0;
+      boost.lastReset = now;
+      resetApplied = true;
+    }
+
+    if (resetApplied) {
+      tx.update(userRef, {
+        "boost.usedToday": 0,
+        "boost.lastReset": now,
+      });
+    }
+
+    if (boost.usedToday >= 3) return 0;
+
+    const REWARD = 0.5;
+
+    tx.update(userRef, {
+      "mining.balance": increment(REWARD),
+      "boost.usedToday": increment(1),
+      "boost.lastReset": now,
+      "boost.balance": increment(REWARD),
+    });
+
+    return REWARD;
+  });
+
+  return reward;
+}
+
+
+// ------------------------------
+// DAILY CLAIM (STREAK + INTERSTITIAL)
+// ------------------------------
+export async function claimDailyReward(uid: string) {
+  const userRef = doc(db, "users", uid);
+
+  const reward = await runTransaction(db, async (tx) => {
+    const snap = await tx.get(userRef);
+    if (!snap.exists()) return 0;
+
+    const data = snap.data();
+    const daily = data.dailyClaim ?? {
+      lastClaim: null,
+      streak: 0,
+      totalEarned: 0,
+    };
+
+    const now = Timestamp.now();
+    const lastClaim = daily.lastClaim?.toMillis() ?? 0;
+    const diff = now.toMillis() - lastClaim;
+
+    const DAY = 24 * 3600 * 1000;
+
+    // ❌ Already claimed within 24h
+    if (lastClaim && diff < DAY) {
+      return 0;
+    }
+
+    // ✅ If missed over 48h → reset streak
+    if (lastClaim && diff >= DAY * 2) {
+      daily.streak = 0;
+    }
+
+    // ✅ Increase streak
+    daily.streak += 1;
+
+    // ✅ Reward table
+    let REWARD = 0.1 * daily.streak;
+    if (daily.streak === 7) REWARD = 2;
+
+    tx.update(userRef, {
+      "mining.balance": increment(REWARD),
+      "dailyClaim.lastClaim": now,
+      "dailyClaim.streak": daily.streak,
+      "dailyClaim.totalEarned": increment(REWARD),
+    });
+
+    return REWARD;
+  });
+
+  return reward;
+}
+
+// ------------------------------
+// WATCH & EARN (REWARDED ADS)
+// ------------------------------
+export async function claimWatchEarnReward(uid: string) {
+  const userRef = doc(db, "users", uid);
+
+  const reward = await runTransaction(db, async (tx) => {
+    const snap = await tx.get(userRef);
+    if (!snap.exists()) return 0;
+
+    const data = snap.data();
+    const watch = data.watchEarn ?? {
+      totalWatched: 0,
+      totalEarned: 0,
+    };
+
+    const REWARD = 0.25; // ✅ you can change this later
+
+    tx.update(userRef, {
+      "mining.balance": increment(REWARD),
+      "watchEarn.totalWatched": increment(1),
+      "watchEarn.totalEarned": increment(REWARD),
+    });
+
+    return REWARD;
+  });
+
+  return reward;
 }

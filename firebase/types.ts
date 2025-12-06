@@ -22,3 +22,23 @@ export interface ReferralData {
   totalReferred: number;
   referredUsers: string[];
 }
+
+// BOOST DATA
+export interface BoostData {
+  usedToday: number;
+  lastReset: Timestamp | null;
+  balance: number;
+}
+
+// DAILY CLAIM DATA
+export interface DailyClaimData {
+  lastClaim: Timestamp | null;
+  streak: number;
+  totalEarned: number;
+}
+
+// WATCH & EARN DATA
+export interface WatchEarnData {
+  totalWatched: number;
+  totalEarned: number;
+}

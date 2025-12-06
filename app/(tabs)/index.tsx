@@ -21,9 +21,9 @@ import { LinearGradient } from "expo-linear-gradient";
 import { auth, app } from "../../firebase/firebaseConfig";
 import { useMining } from "../../hooks/useMining";
 import { getDatabase, ref as dbRef, onValue } from "firebase/database";
-import DailyClaim from "../../components/daily-claim";
-import Boost from "../../components/boost";
-import WatchEarn from "../../components/watch-earn";
+import DailyClaim from "../../components/DailyClaim";
+import Boost from "../../components/Boost";
+import WatchEarn from "../../components/Watch-Earn";
 
 
 const { width } = Dimensions.get("window");
