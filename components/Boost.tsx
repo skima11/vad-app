@@ -1,4 +1,4 @@
-// app/(tabs)/Boost.tsx
+// app/components/Boost.tsx
 import {
   View,
   Text,

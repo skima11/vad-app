@@ -6,6 +6,7 @@ import { auth, db, storage } from "../firebase/firebaseConfig";
 import { useEffect, useState } from "react";
 import { onAuthStateChanged } from "firebase/auth";
 import { doc, getDoc } from "firebase/firestore";
+import mobileAds from 'react-native-google-mobile-ads';
 
 
 export default function RootLayout() {
@@ -34,6 +35,20 @@ export default function RootLayout() {
 
     return unsubscribe;
   }, []);
+
+
+  // inside RootLayout
+useEffect(() => {
+  // initialize AdMob safely (returns a promise)
+  (async () => {
+    try {
+      await mobileAds().initialize();
+      console.log('[AdMob] initialized');
+    } catch (e) {
+      console.warn('[AdMob] initialization failed', e);
+    }
+  })();
+}, []);
 
   if (loading) return <StatusBar style="auto" />;
 

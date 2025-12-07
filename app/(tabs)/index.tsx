@@ -24,6 +24,8 @@ import { getDatabase, ref as dbRef, onValue } from "firebase/database";
 import DailyClaim from "../../components/DailyClaim";
 import Boost from "../../components/Boost";
 import WatchEarn from "../../components/Watch-Earn";
+import AdBanner from "../../components/AdBanner";
+
 
 
 const { width } = Dimensions.get("window");
@@ -177,28 +179,24 @@ useEffect(() => {
   };
 
   // Realtime Database listener for /news (ordered by key latest-first)
-  useEffect(() => {
-    try {
-      const db = getDatabase(app);
-      const newsRef = dbRef(db, "news");
-      const unsub = onValue(newsRef, (snap) => {
-        const value = snap.val() ?? {};
-        // convert to array ordered by timestamp descending (if timestamp exists)
-        const arr = Object.keys(value)
-          .map((k) => ({ id: k, ...(value[k] as any) }))
-          .sort((a, b) => {
-            const ta = a.timestamp ? a.timestamp : 0;
-            const tb = b.timestamp ? b.timestamp : 0;
-            return tb - ta;
-          });
-        setNews(arr);
-      });
+ useEffect(() => {
+  if (!app) return;
 
-      return () => unsub();
-    } catch (err) {
-      console.warn("Realtime DB news listener error", err);
-    }
-  }, []);
+  const db = getDatabase(app);
+  const newsRef = dbRef(db, "news");
+
+  const unsub = onValue(newsRef, (snap) => {
+    const value = snap.val() ?? {};
+    const arr = Object.keys(value)
+      .map((k) => ({ id: k, ...(value[k] as any) }))
+      .sort((a, b) => (b.timestamp ?? 0) - (a.timestamp ?? 0));
+
+    setNews(arr);
+  });
+
+  return () => unsub();
+}, []);
+
 
   if (isLoading) {
     return (
@@ -360,10 +358,11 @@ useEffect(() => {
           </View>
         </View>
 
-        {/* Banner ad placeholder */}
-        <View style={styles.bannerCard}>
-          <Text style={styles.bannerLabel}>Banner ads</Text>
-        </View>
+        {/* ✅ REAL BANNER AD */}
+<View style={styles.bannerCard}>
+  <AdBanner />
+</View>
+
 
         {/* Utilities row (inline components imported from components) */}
 <Pressable style={styles.utilityItem} onPress={() => setDailyOpen(true)}>
